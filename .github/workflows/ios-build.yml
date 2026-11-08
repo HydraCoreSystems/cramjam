@@ -25,13 +25,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select newest stable Xcode on the image
+      - name: Select newest stable Xcode 16.x on the image
         run: |
           set -euo pipefail
-          # Only plain release installs such as Xcode_26.1.app. Beta and RC installs are skipped.
-          XCODE_APP="$(ls -d /Applications/Xcode_*.app | grep -E '^/Applications/Xcode_[0-9]+(\.[0-9]+)*\.app$' | sort -V | tail -n 1)"
+          # Only plain 16.x release installs such as Xcode_16.4.app. Beta and RC installs are skipped.
+          XCODE_APP="$(ls -d /Applications/Xcode_*.app | grep -E '^/Applications/Xcode_16(\.[0-9]+)*\.app$' | sort -V | tail -n 1 || true)"
           if [ -z "$XCODE_APP" ]; then
-            echo "No stable Xcode install found on this image" >&2
+            echo "::error::No plain Xcode 16.x install found on this image. Installed Xcode apps:" >&2
+            ls -d /Applications/Xcode*.app >&2 || true
             exit 1
           fi
           sudo xcode-select -s "$XCODE_APP/Contents/Developer"
