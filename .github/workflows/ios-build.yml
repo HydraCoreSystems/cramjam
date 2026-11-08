@@ -62,18 +62,33 @@ jobs:
           # reach it, and Package.swift fixes the language mode itself, so patch it here.
           PKG="node_modules/expo-modules-jsi/apple/Package.swift"
           test -f "$PKG"
-          echo "Before:"; grep -n 'swiftLanguageModes' "$PKG"
+          echo "Before:"; grep -n 'swiftLanguageModes\|enableUpcomingFeature' "$PKG"
           if [ "$(grep -c 'swiftLanguageModes: \[\.v6\]' "$PKG")" != "1" ]; then
             echo "::error::Expected exactly one swiftLanguageModes: [.v6] line in $PKG" >&2
             exit 1
           fi
           sed -i.bak 's/swiftLanguageModes: \[\.v6\]/swiftLanguageModes: [.v5]/' "$PKG"
           rm -f "$PKG.bak"
-          echo "After:"; grep -n 'swiftLanguageModes' "$PKG"
           if ! grep -q 'swiftLanguageModes: \[\.v5\]' "$PKG"; then
             echo "::error::Language mode patch did not land in $PKG" >&2
             exit 1
           fi
+          # Swift 5 mode lacks defaults the library was written against. The first two features are
+          # the compile errors seen in run 9 (bare slash regex literals, isolated default values).
+          # The rest are the other Swift 6 mode defaults that change what compiles.
+          if [ "$(grep -c 'enableUpcomingFeature("InferIsolatedConformances"),' "$PKG")" != "1" ]; then
+            echo "::error::Expected exactly one InferIsolatedConformances line in $PKG" >&2
+            exit 1
+          fi
+          perl -0pi.bak -e 's/^([ \t]*)\.enableUpcomingFeature\("InferIsolatedConformances"\),\n/$&$1.enableUpcomingFeature("BareSlashRegexLiterals"),\n$1.enableUpcomingFeature("IsolatedDefaultValues"),\n$1.enableUpcomingFeature("DisableOutwardActorInference"),\n$1.enableUpcomingFeature("InferSendableFromCaptures"),\n$1.enableUpcomingFeature("ImplicitOpenExistentials"),\n/m' "$PKG"
+          rm -f "$PKG.bak"
+          for F in BareSlashRegexLiterals IsolatedDefaultValues DisableOutwardActorInference InferSendableFromCaptures ImplicitOpenExistentials; do
+            if [ "$(grep -c "enableUpcomingFeature(\"$F\")" "$PKG")" != "1" ]; then
+              echo "::error::Upcoming feature $F did not land exactly once in $PKG" >&2
+              exit 1
+            fi
+          done
+          echo "After:"; grep -n 'swiftLanguageModes\|enableUpcomingFeature' "$PKG"
 
       - name: Expo prebuild (iOS)
         env:
