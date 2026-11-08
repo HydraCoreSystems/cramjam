@@ -1,0 +1,233 @@
+name: iOS Build and Upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "Build number (CFBundleVersion) for this upload"
+        required: true
+        default: "2"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  BUNDLE_ID: com.gatheringmoss.cramjam
+  PROFILE_NAME: CramJam App Store
+  KEYCHAIN_PATH: ${{ runner.temp }}/cramjam-signing.keychain-db
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select newest stable Xcode on the image
+        run: |
+          set -euo pipefail
+          # Only plain release installs such as Xcode_26.1.app. Beta and RC installs are skipped.
+          XCODE_APP="$(ls -d /Applications/Xcode_*.app | grep -E '^/Applications/Xcode_[0-9]+(\.[0-9]+)*\.app$' | sort -V | tail -n 1)"
+          if [ -z "$XCODE_APP" ]; then
+            echo "No stable Xcode install found on this image" >&2
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          echo "Selected: $XCODE_APP"
+          xcodebuild -version
+          {
+            echo "### Xcode selected"
+            echo '```'
+            echo "$XCODE_APP"
+            xcodebuild -version
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Expo prebuild (iOS)
+        env:
+          CI: "1"
+        # --no-install leaves CocoaPods to the dedicated pod install step below.
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: Pod install
+        working-directory: ios
+        run: pod install
+
+      - name: Set build number from workflow input
+        env:
+          BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          case "$BUILD_NUMBER" in
+            ''|*[!0-9]*) echo "build_number must be a positive integer" >&2; exit 1 ;;
+          esac
+          PLIST="$(ls ios/*/Info.plist | head -n 1)"
+          echo "Info.plist: $PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST"
+          ACTUAL="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST")"
+          if [ "$ACTUAL" != "$BUILD_NUMBER" ]; then
+            echo "CFBundleVersion readback mismatch: $ACTUAL" >&2
+            exit 1
+          fi
+          echo "CFBundleVersion is now $ACTUAL"
+
+      - name: Import distribution certificate into temporary keychain
+        env:
+          DIST_CERT_P12_BASE64: ${{ secrets.DIST_CERT_P12_BASE64 }}
+          DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/dist_cert.p12"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+
+          printf '%s' "$DIST_CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$DIST_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          rm -f "$CERT_PATH"
+
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -c "Apple Distribution" \
+            || { echo "No Apple Distribution identity found after import" >&2; exit 1; }
+
+      - name: Install provisioning profile and read team ID
+        env:
+          PROVISION_PROFILE_BASE64: ${{ secrets.PROVISION_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
+          PROFILE_PLIST="$RUNNER_TEMP/profile.plist"
+          printf '%s' "$PROVISION_PROFILE_BASE64" | base64 --decode > "$PROFILE_PATH"
+
+          security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
+          PROFILE_UUID="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")"
+          ACTUAL_NAME="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PROFILE_PLIST")"
+          TEAM_ID="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$PROFILE_PLIST")"
+
+          if [ "$ACTUAL_NAME" != "$PROFILE_NAME" ]; then
+            echo "Installed profile is named '$ACTUAL_NAME', expected '$PROFILE_NAME'" >&2
+            exit 1
+          fi
+          if [ -z "$TEAM_ID" ]; then
+            echo "Could not read team ID from provisioning profile" >&2
+            exit 1
+          fi
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+          echo "PROFILE_UUID=$PROFILE_UUID" >> "$GITHUB_ENV"
+          echo "TEAM_ID=$TEAM_ID" >> "$GITHUB_ENV"
+          rm -f "$PROFILE_PATH" "$PROFILE_PLIST"
+          echo "Installed profile: $ACTUAL_NAME"
+
+      - name: Archive
+        run: |
+          set -euo pipefail
+          WORKSPACE="$(ls -d ios/*.xcworkspace | head -n 1)"
+          SCHEME="$(basename "$WORKSPACE" .xcworkspace)"
+          echo "Workspace: $WORKSPACE  Scheme: $SCHEME"
+          xcodebuild archive \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/CramJam.xcarchive" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
+            -quiet 2>&1 | tee "$RUNNER_TEMP/archive.log"
+
+      - name: Export IPA
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store-connect</string>
+            <key>teamID</key>
+            <string>${TEAM_ID}</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>signingCertificate</key>
+            <string>Apple Distribution</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${BUNDLE_ID}</key>
+              <string>${PROFILE_NAME}</string>
+            </dict>
+            <key>uploadSymbols</key>
+            <true/>
+            <key>manageAppVersionAndBuildNumber</key>
+            <false/>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/CramJam.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -quiet 2>&1 | tee "$RUNNER_TEMP/export.log"
+          IPA="$(ls "$RUNNER_TEMP"/export/*.ipa | head -n 1)"
+          echo "IPA_PATH=$IPA" >> "$GITHUB_ENV"
+          echo "Exported: $IPA"
+
+      - name: Upload to App Store Connect
+        env:
+          ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          # altool finds the key by name in this directory.
+          KEY_DIR="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$KEY_DIR"
+          printf '%s' "$ASC_API_KEY_P8_BASE64" | base64 --decode > "$KEY_DIR/AuthKey_${ASC_KEY_ID}.p8"
+          chmod 600 "$KEY_DIR/AuthKey_${ASC_KEY_ID}.p8"
+          xcrun altool --upload-app --type ios \
+            --file "$IPA_PATH" \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            ${{ runner.temp }}/archive.log
+            ${{ runner.temp }}/export.log
+          if-no-files-found: ignore
+
+      - name: Clean up signing material
+        if: always()
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" || true
+          if [ -n "${PROFILE_UUID:-}" ]; then
+            rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+          fi
+          rm -f "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8" || true
+          rm -f "$RUNNER_TEMP/dist_cert.p12" "$RUNNER_TEMP/profile.mobileprovision" || true
