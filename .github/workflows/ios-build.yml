@@ -97,10 +97,28 @@ jobs:
 
           printf '%s' "$DIST_CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
 
+          EXPECTED_BYTES=3093
+          ACTUAL_BYTES="$(wc -c < "$CERT_PATH" | tr -d ' ')"
+          echo "Decoded certificate file size: $ACTUAL_BYTES bytes"
+          if [ "$ACTUAL_BYTES" != "$EXPECTED_BYTES" ]; then
+            echo "::error::Stored certificate value is bad: decoded $ACTUAL_BYTES bytes, expected $EXPECTED_BYTES"
+            exit 1
+          fi
+          export DIST_CERT_PASSWORD
+          if openssl pkcs12 -in "$CERT_PATH" -noout -passin env:DIST_CERT_PASSWORD >/dev/null 2>&1; then
+            echo "openssl parse: ok (plain)"
+          elif openssl pkcs12 -legacy -provider default -provider legacy -in "$CERT_PATH" -noout -passin env:DIST_CERT_PASSWORD >/dev/null 2>&1; then
+            echo "openssl parse: ok (legacy provider)"
+          else
+            echo "::error::Stored certificate value is bad: openssl could not parse the file with the stored password (plain and legacy both failed)"
+            exit 1
+          fi
+          echo "Stored certificate value verified at $ACTUAL_BYTES bytes"
+
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -P "$DIST_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$DIST_CERT_PASSWORD" -A -f pkcs12 -k "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
           rm -f "$CERT_PATH"
