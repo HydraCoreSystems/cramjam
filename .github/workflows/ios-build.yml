@@ -107,14 +107,69 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -c "Apple Distribution" \
             || { echo "No Apple Distribution identity found after import" >&2; exit 1; }
 
-      - name: Install provisioning profile and read team ID
+      - name: Fetch and install provisioning profile, read team ID
         env:
-          PROVISION_PROFILE_BASE64: ${{ secrets.PROVISION_PROFILE_BASE64 }}
+          ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           set -euo pipefail
+          KEY_DIR="$HOME/.appstoreconnect/private_keys"
+          KEY_FILE="$KEY_DIR/AuthKey_${ASC_KEY_ID}.p8"
+          mkdir -p "$KEY_DIR"
+          printf '%s' "$ASC_API_KEY_P8_BASE64" | base64 --decode > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+
+          # Short lived ES256 JWT (10 minutes), signed with the same key the upload step uses.
+          JWT="$(KEY_FILE="$KEY_FILE" node -e '
+            const crypto = require("crypto");
+            const fs = require("fs");
+            const b64u = (b) => Buffer.from(b).toString("base64url");
+            const now = Math.floor(Date.now() / 1000);
+            const header = { alg: "ES256", kid: process.env.ASC_KEY_ID, typ: "JWT" };
+            const payload = { iss: process.env.ASC_ISSUER_ID, iat: now, exp: now + 600, aud: "appstoreconnect-v1" };
+            const input = b64u(JSON.stringify(header)) + "." + b64u(JSON.stringify(payload));
+            const sig = crypto.sign("sha256", Buffer.from(input), {
+              key: fs.readFileSync(process.env.KEY_FILE),
+              dsaEncoding: "ieee-p1363",
+            });
+            process.stdout.write(input + "." + b64u(sig));
+          ')"
+          echo "::add-mask::$JWT"
+
+          RESPONSE="$RUNNER_TEMP/profiles-response.json"
+          curl -sS --fail-with-body -G "https://api.appstoreconnect.apple.com/v1/profiles" \
+            -H "Authorization: Bearer $JWT" \
+            --data-urlencode "filter[name]=$PROFILE_NAME" \
+            --data-urlencode "filter[profileState]=ACTIVE" \
+            --data-urlencode "include=bundleId" \
+            --data-urlencode "limit=200" \
+            -o "$RESPONSE"
+
+          # Keep only an exact name match, ACTIVE, for this bundle ID. Newest expiry wins.
           PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
           PROFILE_PLIST="$RUNNER_TEMP/profile.plist"
-          printf '%s' "$PROVISION_PROFILE_BASE64" | base64 --decode > "$PROFILE_PATH"
+          RESPONSE="$RESPONSE" PROFILE_PATH="$PROFILE_PATH" node -e '
+            const fs = require("fs");
+            const body = JSON.parse(fs.readFileSync(process.env.RESPONSE, "utf8"));
+            const bundles = {};
+            for (const inc of body.included || []) {
+              if (inc.type === "bundleIds") bundles[inc.id] = inc.attributes.identifier;
+            }
+            const matches = (body.data || []).filter((p) => {
+              const rel = p.relationships && p.relationships.bundleId && p.relationships.bundleId.data;
+              return p.attributes.name === process.env.PROFILE_NAME
+                && p.attributes.profileState === "ACTIVE"
+                && rel && bundles[rel.id] === process.env.BUNDLE_ID;
+            });
+            if (matches.length === 0) {
+              console.error("No ACTIVE profile named " + process.env.PROFILE_NAME + " for " + process.env.BUNDLE_ID);
+              process.exit(1);
+            }
+            matches.sort((a, b) => String(b.attributes.expirationDate).localeCompare(String(a.attributes.expirationDate)));
+            fs.writeFileSync(process.env.PROFILE_PATH, Buffer.from(matches[0].attributes.profileContent, "base64"));
+          '
+          rm -f "$RESPONSE"
 
           security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
           PROFILE_UUID="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")"
