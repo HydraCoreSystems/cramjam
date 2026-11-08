@@ -1,0 +1,25 @@
+node_modules/
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+npm-debug.*
+*.tsbuildinfo
+.DS_Store
+
+# Generated native folders (CI runs expo prebuild)
+/ios
+/android
+
+# Credentials must never be committed
+credentials/
+*.p8
+*.p12
+*.pem
+*.key
+*.cer
+*.jks
+*.keystore
+*.mobileprovision
+.env
+.env*.local
