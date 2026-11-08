@@ -229,6 +229,7 @@ jobs:
             PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
             SWIFT_STRICT_CONCURRENCY=minimal \
+            SWIFT_VERSION=5 \
             -quiet 2>&1 | tee "$RUNNER_TEMP/archive.log"
 
       - name: Export IPA
