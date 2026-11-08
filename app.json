@@ -1,0 +1,49 @@
+{
+  "expo": {
+    "name": "CramJam",
+    "slug": "cramjam",
+    "scheme": "cramjam",
+    "version": "1.0.0",
+    "icon": "./assets/icon.png",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.gatheringmoss.cramjam",
+      "usesAppleSignIn": true
+    },
+    "android": {
+      "package": "com.gatheringmoss.cramjam"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-apple-authentication",
+      "expo-notifications",
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "CramJam uses the camera to photograph your notes and syllabus. The text is read on your device and only the text is sent.",
+          "photosPermission": "CramJam reads photos you choose, such as notes or a syllabus. The text is read on your device and only the text is sent.",
+          "microphonePermission": false
+        }
+      ],
+      "expo-iap",
+      "expo-sharing"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {
+        "asyncRoutes": {
+          "web": true
+        }
+      },
+      "eas": {
+        "projectId": "894a72b9-72eb-4833-b6ad-75188a0aa5a6"
+      }
+    },
+    "owner": "gatheringmossphils-team"
+  }
+}
