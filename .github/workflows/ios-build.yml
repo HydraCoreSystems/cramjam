@@ -15,7 +15,6 @@ permissions:
 env:
   BUNDLE_ID: com.gatheringmoss.cramjam
   PROFILE_NAME: CramJam App Store
-  KEYCHAIN_PATH: ${{ runner.temp }}/cramjam-signing.keychain-db
 
 jobs:
   build:
@@ -89,6 +88,8 @@ jobs:
           DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
         run: |
           set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/cramjam-signing.keychain-db"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
           CERT_PATH="$RUNNER_TEMP/dist_cert.p12"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
           echo "::add-mask::$KEYCHAIN_PASSWORD"
@@ -280,7 +281,7 @@ jobs:
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
         run: |
-          security delete-keychain "$KEYCHAIN_PATH" || true
+          security delete-keychain "${KEYCHAIN_PATH:-$RUNNER_TEMP/cramjam-signing.keychain-db}" || true
           if [ -n "${PROFILE_UUID:-}" ]; then
             rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
           fi
