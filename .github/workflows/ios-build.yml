@@ -54,6 +54,27 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Relax Swift language mode for expo-modules-jsi
+        run: |
+          set -euo pipefail
+          # expo-modules-jsi builds its own SwiftPM package from a podspec script phase, with a
+          # nested xcodebuild run under env -i. Build settings given to the outer archive never
+          # reach it, and Package.swift fixes the language mode itself, so patch it here.
+          PKG="node_modules/expo-modules-jsi/apple/Package.swift"
+          test -f "$PKG"
+          echo "Before:"; grep -n 'swiftLanguageModes' "$PKG"
+          if [ "$(grep -c 'swiftLanguageModes: \[\.v6\]' "$PKG")" != "1" ]; then
+            echo "::error::Expected exactly one swiftLanguageModes: [.v6] line in $PKG" >&2
+            exit 1
+          fi
+          sed -i.bak 's/swiftLanguageModes: \[\.v6\]/swiftLanguageModes: [.v5]/' "$PKG"
+          rm -f "$PKG.bak"
+          echo "After:"; grep -n 'swiftLanguageModes' "$PKG"
+          if ! grep -q 'swiftLanguageModes: \[\.v5\]' "$PKG"; then
+            echo "::error::Language mode patch did not land in $PKG" >&2
+            exit 1
+          fi
+
       - name: Expo prebuild (iOS)
         env:
           CI: "1"
