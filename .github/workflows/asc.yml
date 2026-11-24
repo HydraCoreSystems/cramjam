@@ -23,7 +23,7 @@ permissions:
 
 env:
   APP_ID: "6832270240"
-  SUBMISSION_ID: 5e11f7af-51d6-4743-84f4-7e9ab4cda92d
+  SUBMISSION_ID: 07da6b74-566d-41e0-bdd1-4a087a6e8bcb
   VERSION_STRING: 1.0.0
 
 jobs:
