@@ -154,7 +154,15 @@ if (action === "status") {
   console.log(`Store version ${final.name}: state ${final.state}, attached build ${final.buildNumber}`);
 } else if (action === "links") {
   // Read only: what the product records link to, to find where a product's pending version lives.
-  for (const path of ["/v2/inAppPurchases/6832279552", "/v1/subscriptions/6832271338", "/v1/subscriptionGroups/22558616", `/v1/reviewSubmissions/${SUBMISSION_ID}/items?limit=1`]) {
+  for (const path of ["/v2/inAppPurchases/6832279552/versions", "/v1/subscriptions/6832271338/versions", "/v1/subscriptions/6832270954/versions", "/v1/subscriptionGroups/22558616/versions"]) {
+    const r = await api("GET", path);
+    console.log(`${path}: ${r.data.length} versions`);
+    for (const d of r.data) {
+      console.log(`  ${d.type} ${d.id}: ${JSON.stringify(d.attributes)}`);
+      for (const [name, rel] of Object.entries(d.relationships ?? {})) console.log(`    ${name}: ${rel.links?.related ?? ""}`);
+    }
+  }
+  for (const path of ["/v2/inAppPurchases/6832279552", "/v1/subscriptions/6832271338", "/v1/subscriptionGroups/22558616"]) {
     const r = await api("GET", path);
     const d = Array.isArray(r.data) ? r.data[0] : r.data;
     console.log(`${path.split("?")[0]}: ${d.type}`);
