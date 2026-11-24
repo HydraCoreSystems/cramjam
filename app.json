@@ -10,7 +10,8 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.gatheringmoss.cramjam",
-      "usesAppleSignIn": true
+      "usesAppleSignIn": true,
+      "buildNumber": "3"
     },
     "android": {
       "package": "com.gatheringmoss.cramjam"

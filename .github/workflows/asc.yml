@@ -1,0 +1,51 @@
+name: App Store Connect
+
+# The CramJam build swap. "status" only reads. "attach" puts the build on version 1.0 in place of the
+# current one and checks the open review submission. "testflight" adds the build to the internal TestFlight
+# groups that have the build it replaces. Logs carry states and IDs only.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "status, attach or testflight"
+        required: true
+        default: status
+        type: choice
+        options: [status, attach, testflight]
+      build_number:
+        description: "Build number (CFBundleVersion)"
+        required: true
+        default: "3"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  APP_ID: "6832270240"
+  SUBMISSION_ID: 5e11f7af-51d6-4743-84f4-7e9ab4cda92d
+  VERSION_STRING: 1.0.0
+
+jobs:
+  asc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: ${{ inputs.action }} build ${{ inputs.build_number }}
+        env:
+          ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ACTION: ${{ inputs.action }}
+          BUILD: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          export ASC_KEY_FILE="$RUNNER_TEMP/asc.p8"
+          printf '%s' "$ASC_API_KEY_P8_BASE64" | base64 --decode > "$ASC_KEY_FILE"
+          chmod 600 "$ASC_KEY_FILE"
+          trap 'rm -f "$ASC_KEY_FILE"' EXIT
+          node scripts/asc.mjs "$ACTION" "$BUILD" | tee -a "$GITHUB_STEP_SUMMARY"
