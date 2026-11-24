@@ -11,7 +11,7 @@ import fs from "node:fs";
 
 const { ASC_KEY_FILE, ASC_KEY_ID, ASC_ISSUER_ID, APP_ID, SUBMISSION_ID, VERSION_STRING } = process.env;
 const [action, buildNumber] = process.argv.slice(2);
-if (!["status", "attach", "testflight", "resubmit", "submissions", "probe"].includes(action) || !/^\d+$/.test(buildNumber ?? "")) {
+if (!["status", "attach", "testflight", "resubmit", "submissions", "probe", "products"].includes(action) || !/^\d+$/.test(buildNumber ?? "")) {
   console.error("usage: asc.mjs status|attach|testflight <build number>");
   process.exit(2);
 }
@@ -100,6 +100,18 @@ async function report(n) {
 
 if (action === "status") {
   await report(buildNumber);
+} else if (action === "products") {
+  // Read only: in-app purchases, subscription groups and subscriptions with their review states.
+  const iaps = await api("GET", `/v1/apps/${APP_ID}/inAppPurchasesV2?limit=50&fields[inAppPurchases]=name,productId,inAppPurchaseType,state`);
+  for (const p of iaps.data) console.log(`  in-app purchase ${p.id}: ${p.attributes.productId} (${p.attributes.inAppPurchaseType}) ${p.attributes.state}`);
+  const groups = await api("GET", `/v1/apps/${APP_ID}/subscriptionGroups?limit=50&fields[subscriptionGroups]=referenceName`);
+  for (const g of groups.data) {
+    console.log(`  subscription group ${g.id}: ${g.attributes.referenceName}`);
+    const subs = await api("GET", `/v1/subscriptionGroups/${g.id}/subscriptions?limit=50&fields[subscriptions]=name,productId,state`);
+    for (const x of subs.data) console.log(`    subscription ${x.id}: ${x.attributes.productId} ${x.attributes.state}`);
+  }
+  const v = await version();
+  console.log(`Store version ${v.name}: state ${v.state}, attached build ${v.buildNumber}`);
 } else if (action === "probe") {
   // Read only: decode the removed items of the cancelled submission and find what kind of record each one was.
   const items = await api("GET", `/v1/reviewSubmissions/${SUBMISSION_ID}/items?limit=50`);

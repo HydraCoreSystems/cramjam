@@ -11,7 +11,7 @@ on:
         required: true
         default: status
         type: choice
-        options: [status, attach, testflight, resubmit, submissions, probe]
+        options: [status, attach, testflight, resubmit, submissions, probe, products]
       build_number:
         description: "Build number (CFBundleVersion)"
         required: true
