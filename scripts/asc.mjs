@@ -11,7 +11,7 @@ import fs from "node:fs";
 
 const { ASC_KEY_FILE, ASC_KEY_ID, ASC_ISSUER_ID, APP_ID, SUBMISSION_ID, VERSION_STRING } = process.env;
 const [action, buildNumber] = process.argv.slice(2);
-if (!["status", "attach", "testflight", "resubmit", "submissions"].includes(action) || !/^\d+$/.test(buildNumber ?? "")) {
+if (!["status", "attach", "testflight", "resubmit", "submissions", "probe"].includes(action) || !/^\d+$/.test(buildNumber ?? "")) {
   console.error("usage: asc.mjs status|attach|testflight <build number>");
   process.exit(2);
 }
@@ -100,6 +100,26 @@ async function report(n) {
 
 if (action === "status") {
   await report(buildNumber);
+} else if (action === "probe") {
+  // Read only: decode the removed items of the cancelled submission and find what kind of record each one was.
+  const items = await api("GET", `/v1/reviewSubmissions/${SUBMISSION_ID}/items?limit=50`);
+  const endpoints = ["v1/appStoreVersions", "v1/appCustomProductPageVersions", "v2/appStoreVersionExperiments", "v1/appStoreVersionExperiments",
+    "v1/appEvents", "v1/backgroundAssetVersions", "v1/gameCenterAchievementVersions", "v1/gameCenterLeaderboardVersions",
+    "v1/gameCenterLeaderboardSetVersions", "v1/gameCenterActivityVersions", "v1/gameCenterChallengeVersions",
+    "v2/inAppPurchases", "v1/subscriptions", "v1/subscriptionGroups", "v1/promotedPurchases", "v1/winBackOffers"];
+  for (const i of items.data) {
+    const [, code, target] = Buffer.from(i.id, "base64").toString().split("|");
+    let found = "no endpoint answered";
+    for (const e of endpoints) {
+      try {
+        const r = await api("GET", `/${e}/${target}`);
+        const a = r.data.attributes ?? {};
+        found = `${e.split("/")[1]}: ${a.name ?? a.referenceName ?? a.productId ?? a.versionString ?? a.state ?? ""} ${a.state ?? a.appStoreState ?? ""}`;
+        break;
+      } catch { /* not this kind */ }
+    }
+    console.log(`  type ${code} ${target}: ${found}`);
+  }
 } else if (action === "submissions") {
   // Read only: every review submission for the app, and what each item points to.
   const v = await version();
