@@ -127,18 +127,23 @@ if (action === "status") {
   };
   await tryPost(`version ${v.name}`, "/v1/reviewSubmissionItems", { data: { type: "reviewSubmissionItems",
     relationships: { reviewSubmission: { data: { type: "reviewSubmissions", id: subId } }, appStoreVersion: { data: { type: "appStoreVersions", id: v.id } } } } });
+  // Products travel as their pending versions (inAppPurchaseVersions, subscriptionVersions,
+  // subscriptionGroupVersions), each a review submission item of its own.
+  const addVersion = async (label, rel, type, versionsPath) => {
+    const vs = await api("GET", versionsPath);
+    for (const pv of vs.data.filter((x) => x.attributes.state !== "APPROVED" && x.attributes.state !== "WAITING_FOR_REVIEW"))
+      await tryPost(`${label} version ${pv.attributes.version} (${pv.attributes.state})`, "/v1/reviewSubmissionItems", { data: { type: "reviewSubmissionItems",
+        relationships: { reviewSubmission: { data: { type: "reviewSubmissions", id: subId } }, [rel]: { data: { type, id: pv.id } } } } });
+  };
   const iaps = await api("GET", `/v1/apps/${APP_ID}/inAppPurchasesV2?limit=50&fields[inAppPurchases]=productId,state`);
-  for (const p of iaps.data.filter((x) => x.attributes.state === "READY_TO_SUBMIT"))
-    await tryPost(`in-app purchase ${p.attributes.productId}`, "/v1/inAppPurchaseSubmissions", { data: { type: "inAppPurchaseSubmissions",
-      relationships: { inAppPurchaseV2: { data: { type: "inAppPurchases", id: p.id } } } } });
+  for (const p of iaps.data)
+    await addVersion(`in-app purchase ${p.attributes.productId}`, "inAppPurchaseVersion", "inAppPurchaseVersions", `/v2/inAppPurchases/${p.id}/versions`);
   const groups = await api("GET", `/v1/apps/${APP_ID}/subscriptionGroups?limit=50&fields[subscriptionGroups]=referenceName`);
   for (const g of groups.data) {
+    await addVersion(`subscription group ${g.attributes.referenceName}`, "subscriptionGroupVersion", "subscriptionGroupVersions", `/v1/subscriptionGroups/${g.id}/versions`);
     const subs = await api("GET", `/v1/subscriptionGroups/${g.id}/subscriptions?limit=50&fields[subscriptions]=productId,state`);
-    for (const x of subs.data.filter((y) => y.attributes.state === "READY_TO_SUBMIT"))
-      await tryPost(`subscription ${x.attributes.productId}`, "/v1/subscriptionSubmissions", { data: { type: "subscriptionSubmissions",
-        relationships: { subscription: { data: { type: "subscriptions", id: x.id } } } } });
-    await tryPost(`subscription group ${g.attributes.referenceName}`, "/v1/subscriptionGroupSubmissions", { data: { type: "subscriptionGroupSubmissions",
-      relationships: { subscriptionGroup: { data: { type: "subscriptionGroups", id: g.id } } } } });
+    for (const x of subs.data)
+      await addVersion(`subscription ${x.attributes.productId}`, "subscriptionVersion", "subscriptionVersions", `/v1/subscriptions/${x.id}/versions`);
   }
   const items = await api("GET", `/v1/reviewSubmissions/${subId}/items?limit=50`);
   const states = items.data.map((i) => i.attributes.state);
