@@ -3,6 +3,7 @@
 //   node scripts/asc.mjs status     <build>   read only: version 1.0, builds, review submission, beta groups
 //   node scripts/asc.mjs attach     <build>   put <build> on version 1.0 in place of the current build
 //   node scripts/asc.mjs testflight <build>   put <build> in every internal TestFlight group that has the build it replaces
+//   node scripts/asc.mjs resubmit   <build>   cancel the waiting review submission, put <build> on the version, submit again
 //
 // Env: ASC_KEY_FILE, ASC_KEY_ID, ASC_ISSUER_ID, APP_ID, SUBMISSION_ID, VERSION_STRING.
 import crypto from "node:crypto";
@@ -10,7 +11,7 @@ import fs from "node:fs";
 
 const { ASC_KEY_FILE, ASC_KEY_ID, ASC_ISSUER_ID, APP_ID, SUBMISSION_ID, VERSION_STRING } = process.env;
 const [action, buildNumber] = process.argv.slice(2);
-if (!["status", "attach", "testflight"].includes(action) || !/^\d+$/.test(buildNumber ?? "")) {
+if (!["status", "attach", "testflight", "resubmit"].includes(action) || !/^\d+$/.test(buildNumber ?? "")) {
   console.error("usage: asc.mjs status|attach|testflight <build number>");
   process.exit(2);
 }
@@ -60,10 +61,11 @@ async function build(n) {
 
 async function submission() {
   const s = await api("GET", `/v1/reviewSubmissions/${SUBMISSION_ID}?fields[reviewSubmissions]=state,platform,submittedDate`);
-  const items = await api("GET", `/v1/reviewSubmissions/${SUBMISSION_ID}/items?limit=50&fields[reviewSubmissionItems]=state,appStoreVersion,appCustomProductPageVersion,appStoreVersionExperiment,appStoreVersionExperimentV2,appEvent,backgroundAssetVersion`);
+  const kinds = ["appStoreVersion", "appCustomProductPageVersion", "appStoreVersionExperiment", "appStoreVersionExperimentV2", "appEvent", "backgroundAssetVersion"];
+  const items = await api("GET", `/v1/reviewSubmissions/${SUBMISSION_ID}/items?limit=50&include=${kinds.join(",")}`);
   const rows = items.data.map((i) => {
     const rel = Object.entries(i.relationships ?? {}).find(([, v]) => v.data);
-    return { id: i.id, state: i.attributes.state, kind: rel ? rel[0] : "unknown", target: rel ? rel[1].data.id : null };
+    return { id: i.id, state: i.attributes.state, kind: rel ? rel[0] : "item", target: rel ? rel[1].data.id : null };
   });
   return { state: s.data.attributes.state, submittedDate: s.data.attributes.submittedDate, items: rows };
 }
@@ -90,7 +92,7 @@ async function report(n) {
   }
   const s = await submission();
   console.log(`Review submission ${SUBMISSION_ID}: state ${s.state}${s.submittedDate ? ", submitted " + s.submittedDate : ""}, ${s.items.length} items`);
-  for (const i of s.items) console.log(`  item ${i.id}: ${i.kind} ${i.target} -> ${i.state}`);
+  for (const i of s.items) console.log(`  ${i.kind}${i.target ? " " + i.target : ""}: ${i.state}`);
   for (const g of await groups())
     console.log(`TestFlight group "${g.name}": ${g.internal ? "internal" : "external"}, all builds ${g.allBuilds}, ${g.testers} testers, builds [${g.builds.join(", ")}]`);
   return { v, s };
@@ -115,6 +117,40 @@ if (action === "status") {
     process.exit(1);
   }
   console.log(`CHECK PASSED: version ${VERSION_STRING} carries build ${buildNumber}; all ${s.items.length} items READY_FOR_REVIEW`);
+} else if (action === "resubmit") {
+  const b = await build(buildNumber);
+  if (!b || b.processingState !== "VALID") throw new Error(`build ${buildNumber} is not VALID yet (${b?.processingState ?? "missing"}); nothing changed`);
+  if (b.usesNonExemptEncryption == null) throw new Error(`export compliance is unanswered on build ${buildNumber}; run testflight first; nothing changed`);
+  const before = await submission();
+  console.log(`Submission ${SUBMISSION_ID} before: ${before.state}, ${before.items.length} items`);
+  if (before.state === "WAITING_FOR_REVIEW") {
+    await api("PATCH", `/v1/reviewSubmissions/${SUBMISSION_ID}`, { data: { type: "reviewSubmissions", id: SUBMISSION_ID, attributes: { canceled: true } } });
+    console.log("Cancel requested");
+  } else if (before.state !== "READY_FOR_REVIEW") {
+    throw new Error(`submission is ${before.state}; only WAITING_FOR_REVIEW or READY_FOR_REVIEW is handled; nothing changed`);
+  }
+  let now = before;
+  for (let i = 0; i < 40 && now.state !== "READY_FOR_REVIEW"; i++) {
+    await new Promise((r) => setTimeout(r, 15000));
+    now = await submission();
+    console.log(`  submission state ${now.state}`);
+    if (!["WAITING_FOR_REVIEW", "CANCELING", "READY_FOR_REVIEW"].includes(now.state))
+      throw new Error(`after cancel the submission went to ${now.state}; stopping before attaching or resubmitting`);
+  }
+  if (now.state !== "READY_FOR_REVIEW") throw new Error(`submission still ${now.state} after 10 minutes; stopping`);
+  const v = await version();
+  if (v.buildNumber !== buildNumber) {
+    await api("PATCH", `/v1/appStoreVersions/${v.id}/relationships/build`, { data: { type: "builds", id: b.id } });
+    console.log(`Attached build ${buildNumber} to version ${v.name} (was ${v.buildNumber})`);
+  }
+  const { v: after, s: ready } = await report(buildNumber);
+  const notReady = ready.items.filter((i) => i.state !== "READY_FOR_REVIEW");
+  if (after.buildNumber !== buildNumber || notReady.length || ready.items.length !== before.items.length)
+    throw new Error(`not resubmitting: version carries build ${after.buildNumber}, ${ready.items.length} items (was ${before.items.length}), ${notReady.length} not READY_FOR_REVIEW`);
+  console.log(`CHECK PASSED: version ${after.name} carries build ${buildNumber}; all ${ready.items.length} items READY_FOR_REVIEW`);
+  await api("PATCH", `/v1/reviewSubmissions/${SUBMISSION_ID}`, { data: { type: "reviewSubmissions", id: SUBMISSION_ID, attributes: { submitted: true } } });
+  console.log("Resubmitted for review");
+  await report(buildNumber);
 } else {
   const b = await build(buildNumber);
   if (!b || b.processingState !== "VALID") throw new Error(`build ${buildNumber} is not VALID yet (${b?.processingState ?? "missing"})`);

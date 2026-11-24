@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "status, attach or testflight"
+        description: "status, attach, testflight or resubmit"
         required: true
         default: status
         type: choice
-        options: [status, attach, testflight]
+        options: [status, attach, testflight, resubmit]
       build_number:
         description: "Build number (CFBundleVersion)"
         required: true
@@ -29,7 +29,7 @@ env:
 jobs:
   asc:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
