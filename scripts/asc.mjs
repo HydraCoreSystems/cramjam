@@ -12,7 +12,7 @@ import fs from "node:fs";
 
 const { ASC_KEY_FILE, ASC_KEY_ID, ASC_ISSUER_ID, APP_ID, SUBMISSION_ID, VERSION_STRING } = process.env;
 const [action, buildNumber] = process.argv.slice(2);
-if (!["status", "attach", "testflight", "resubmit", "submissions", "probe", "products", "submit"].includes(action) || !/^\d+$/.test(buildNumber ?? "")) {
+if (!["status", "attach", "testflight", "resubmit", "submissions", "probe", "products", "submit", "links"].includes(action) || !/^\d+$/.test(buildNumber ?? "")) {
   console.error("usage: asc.mjs status|attach|testflight <build number>");
   process.exit(2);
 }
@@ -152,6 +152,14 @@ if (action === "status") {
   console.log(`Submitted ${subId}: state ${sent.data.attributes.state}, submitted ${sent.data.attributes.submittedDate}`);
   const final = await version();
   console.log(`Store version ${final.name}: state ${final.state}, attached build ${final.buildNumber}`);
+} else if (action === "links") {
+  // Read only: what the product records link to, to find where a product's pending version lives.
+  for (const path of ["/v2/inAppPurchases/6832279552", "/v1/subscriptions/6832271338", "/v1/subscriptionGroups/22558616", `/v1/reviewSubmissions/${SUBMISSION_ID}/items?limit=1`]) {
+    const r = await api("GET", path);
+    const d = Array.isArray(r.data) ? r.data[0] : r.data;
+    console.log(`${path.split("?")[0]}: ${d.type}`);
+    for (const [name, rel] of Object.entries(d.relationships ?? {})) console.log(`  ${name}: ${rel.links?.related ?? rel.links?.self ?? ""}`);
+  }
 } else if (action === "products") {
   // Read only: in-app purchases, subscription groups and subscriptions with their review states.
   const iaps = await api("GET", `/v1/apps/${APP_ID}/inAppPurchasesV2?limit=50&fields[inAppPurchases]=name,productId,inAppPurchaseType,state`);
