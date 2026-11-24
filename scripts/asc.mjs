@@ -11,7 +11,7 @@ import fs from "node:fs";
 
 const { ASC_KEY_FILE, ASC_KEY_ID, ASC_ISSUER_ID, APP_ID, SUBMISSION_ID, VERSION_STRING } = process.env;
 const [action, buildNumber] = process.argv.slice(2);
-if (!["status", "attach", "testflight", "resubmit"].includes(action) || !/^\d+$/.test(buildNumber ?? "")) {
+if (!["status", "attach", "testflight", "resubmit", "submissions"].includes(action) || !/^\d+$/.test(buildNumber ?? "")) {
   console.error("usage: asc.mjs status|attach|testflight <build number>");
   process.exit(2);
 }
@@ -100,6 +100,26 @@ async function report(n) {
 
 if (action === "status") {
   await report(buildNumber);
+} else if (action === "submissions") {
+  // Read only: every review submission for the app, and what each item points to.
+  const v = await version();
+  console.log(`Store version ${v.name}: state ${v.state}, attached build ${v.buildNumber}`);
+  const subs = await api("GET", `/v1/reviewSubmissions?filter[app]=${APP_ID}&limit=20&fields[reviewSubmissions]=state,platform,submittedDate`);
+  for (const sub of subs.data) {
+    console.log(`Submission ${sub.id}: ${sub.attributes.platform} ${sub.attributes.state} submitted ${sub.attributes.submittedDate ?? "-"}`);
+    const items = await api("GET", `/v1/reviewSubmissions/${sub.id}/items?limit=50`);
+    for (const i of items.data) {
+      const rels = [];
+      for (const [name, rel] of Object.entries(i.relationships ?? {})) {
+        if (!rel.links?.related) continue;
+        try {
+          const r = await api("GET", new URL(rel.links.related).pathname);
+          if (r.data) rels.push(`${name}=${r.data.type}:${r.data.id}${r.data.attributes?.name ? " (" + r.data.attributes.name + ")" : r.data.attributes?.productId ? " (" + r.data.attributes.productId + ")" : ""}`);
+        } catch { /* relationship kind not available for this item */ }
+      }
+      console.log(`  item ${i.attributes.state}: ${rels.join(", ") || "no readable relationship"}`);
+    }
+  }
 } else if (action === "attach") {
   const v = await version();
   const b = await build(buildNumber);
