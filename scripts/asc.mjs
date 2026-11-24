@@ -4,6 +4,7 @@
 //   node scripts/asc.mjs attach     <build>   put <build> on version 1.0 in place of the current build
 //   node scripts/asc.mjs testflight <build>   put <build> in every internal TestFlight group that has the build it replaces
 //   node scripts/asc.mjs resubmit   <build>   cancel the waiting review submission, put <build> on the version, submit again
+//   node scripts/asc.mjs submit     <build>   put <build> on the version and send it with the app's ready products in a new submission
 //
 // Env: ASC_KEY_FILE, ASC_KEY_ID, ASC_ISSUER_ID, APP_ID, SUBMISSION_ID, VERSION_STRING.
 import crypto from "node:crypto";
@@ -11,7 +12,7 @@ import fs from "node:fs";
 
 const { ASC_KEY_FILE, ASC_KEY_ID, ASC_ISSUER_ID, APP_ID, SUBMISSION_ID, VERSION_STRING } = process.env;
 const [action, buildNumber] = process.argv.slice(2);
-if (!["status", "attach", "testflight", "resubmit", "submissions", "probe", "products"].includes(action) || !/^\d+$/.test(buildNumber ?? "")) {
+if (!["status", "attach", "testflight", "resubmit", "submissions", "probe", "products", "submit"].includes(action) || !/^\d+$/.test(buildNumber ?? "")) {
   console.error("usage: asc.mjs status|attach|testflight <build number>");
   process.exit(2);
 }
@@ -100,6 +101,57 @@ async function report(n) {
 
 if (action === "status") {
   await report(buildNumber);
+} else if (action === "submit") {
+  const b = await build(buildNumber);
+  if (!b || b.processingState !== "VALID" || b.usesNonExemptEncryption == null)
+    throw new Error(`build ${buildNumber} is not VALID with export compliance answered; nothing changed`);
+  const v = await version();
+  if (!["DEVELOPER_REJECTED", "PREPARE_FOR_SUBMISSION", "REJECTED", "METADATA_REJECTED", "READY_FOR_REVIEW"].includes(v.state))
+    throw new Error(`version ${v.name} is ${v.state}; not editable; nothing changed`);
+  if (v.buildNumber !== buildNumber) {
+    await api("PATCH", `/v1/appStoreVersions/${v.id}/relationships/build`, { data: { type: "builds", id: b.id } });
+    console.log(`Attached build ${buildNumber} to version ${v.name} (was ${v.buildNumber})`);
+  }
+  // An open draft submission is reused; otherwise a new one is made.
+  const open = await api("GET", `/v1/reviewSubmissions?filter[app]=${APP_ID}&filter[platform]=IOS&filter[state]=READY_FOR_REVIEW&limit=5`);
+  let subId = open.data[0]?.id;
+  if (!subId) {
+    const created = await api("POST", "/v1/reviewSubmissions", { data: { type: "reviewSubmissions", attributes: { platform: "IOS" },
+      relationships: { app: { data: { type: "apps", id: APP_ID } } } } });
+    subId = created.data.id;
+    console.log(`Created review submission ${subId}`);
+  } else console.log(`Reusing draft review submission ${subId}`);
+  const tryPost = async (label, path, body) => {
+    try { await api("POST", path, body); console.log(`Added ${label}`); }
+    catch (e) { console.log(`${label}: ${e.message}`); }
+  };
+  await tryPost(`version ${v.name}`, "/v1/reviewSubmissionItems", { data: { type: "reviewSubmissionItems",
+    relationships: { reviewSubmission: { data: { type: "reviewSubmissions", id: subId } }, appStoreVersion: { data: { type: "appStoreVersions", id: v.id } } } } });
+  const iaps = await api("GET", `/v1/apps/${APP_ID}/inAppPurchasesV2?limit=50&fields[inAppPurchases]=productId,state`);
+  for (const p of iaps.data.filter((x) => x.attributes.state === "READY_TO_SUBMIT"))
+    await tryPost(`in-app purchase ${p.attributes.productId}`, "/v1/inAppPurchaseSubmissions", { data: { type: "inAppPurchaseSubmissions",
+      relationships: { inAppPurchaseV2: { data: { type: "inAppPurchases", id: p.id } } } } });
+  const groups = await api("GET", `/v1/apps/${APP_ID}/subscriptionGroups?limit=50&fields[subscriptionGroups]=referenceName`);
+  for (const g of groups.data) {
+    const subs = await api("GET", `/v1/subscriptionGroups/${g.id}/subscriptions?limit=50&fields[subscriptions]=productId,state`);
+    for (const x of subs.data.filter((y) => y.attributes.state === "READY_TO_SUBMIT"))
+      await tryPost(`subscription ${x.attributes.productId}`, "/v1/subscriptionSubmissions", { data: { type: "subscriptionSubmissions",
+        relationships: { subscription: { data: { type: "subscriptions", id: x.id } } } } });
+    await tryPost(`subscription group ${g.attributes.referenceName}`, "/v1/subscriptionGroupSubmissions", { data: { type: "subscriptionGroupSubmissions",
+      relationships: { subscriptionGroup: { data: { type: "subscriptionGroups", id: g.id } } } } });
+  }
+  const items = await api("GET", `/v1/reviewSubmissions/${subId}/items?limit=50`);
+  const states = items.data.map((i) => i.attributes.state);
+  console.log(`Submission ${subId}: ${items.data.length} items: ${states.join(", ")}`);
+  const after = await version();
+  if (after.buildNumber !== buildNumber || items.data.length !== 5 || states.some((x) => x !== "READY_FOR_REVIEW"))
+    throw new Error(`not submitting: version carries build ${after.buildNumber}, ${items.data.length} items (expected 5, all READY_FOR_REVIEW)`);
+  console.log(`CHECK PASSED: version ${after.name} carries build ${buildNumber}; all 5 items READY_FOR_REVIEW`);
+  await api("PATCH", `/v1/reviewSubmissions/${subId}`, { data: { type: "reviewSubmissions", id: subId, attributes: { submitted: true } } });
+  const sent = await api("GET", `/v1/reviewSubmissions/${subId}?fields[reviewSubmissions]=state,submittedDate`);
+  console.log(`Submitted ${subId}: state ${sent.data.attributes.state}, submitted ${sent.data.attributes.submittedDate}`);
+  const final = await version();
+  console.log(`Store version ${final.name}: state ${final.state}, attached build ${final.buildNumber}`);
 } else if (action === "products") {
   // Read only: in-app purchases, subscription groups and subscriptions with their review states.
   const iaps = await api("GET", `/v1/apps/${APP_ID}/inAppPurchasesV2?limit=50&fields[inAppPurchases]=name,productId,inAppPurchaseType,state`);
