@@ -61,7 +61,7 @@ async function build(n) {
 
 async function submission() {
   const s = await api("GET", `/v1/reviewSubmissions/${SUBMISSION_ID}?fields[reviewSubmissions]=state,platform,submittedDate`);
-  const kinds = ["appStoreVersion", "appCustomProductPageVersion", "appStoreVersionExperiment", "appStoreVersionExperimentV2", "appEvent", "backgroundAssetVersion"];
+  const kinds = ["appStoreVersion", "appCustomProductPageVersion", "appStoreVersionExperimentV2", "appEvent", "backgroundAssetVersion"];
   const items = await api("GET", `/v1/reviewSubmissions/${SUBMISSION_ID}/items?limit=50&include=${kinds.join(",")}`);
   const rows = items.data.map((i) => {
     const rel = Object.entries(i.relationships ?? {}).find(([, v]) => v.data);
